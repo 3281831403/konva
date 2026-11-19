@@ -4,6 +4,7 @@ import { Container } from './Container.ts';
 import { Node } from './Node.ts';
 import { Factory } from './Factory.ts';
 import { SceneCanvas, HitCanvas } from './Canvas.ts';
+import type { Context } from './Context.ts';
 import type { Stage } from './Stage.ts';
 
 import type { GetSet, IRect, Vector2d } from './types.ts';
@@ -60,6 +61,9 @@ export class Layer extends Container<Group | Shape> {
   });
 
   _waitingForDraw = false;
+  // while true, drawHit() paints the live graph into the buffer canvas even
+  // though the layer's own hit canvas stays frozen for an ongoing drag
+  _drawingLiveHit = false;
 
   constructor(config?: LayerConfig) {
     super(config);
@@ -366,12 +370,40 @@ export class Layer extends Container<Group | Shape> {
     // alpha still rises (the ramp leads into the shape) or the ring holds
     // mixed pixels. A thin line has a flat alpha, so the search stops at once
     // instead of walking along it to an unrelated shape nearby
-    const ratio = this.hitCanvas.pixelRatio,
-      cx = Math.floor(pos.x * ratio),
+    return this._walkIntersection(pos, this.hitCanvas.context);
+  }
+  // resolve a point against a hit graph that may live on another canvas
+  // (the frozen layer hit canvas, or the stage buffer holding a live graph)
+  _getIntersectionFromCanvas(
+    pos: Vector2d,
+    context: Context,
+    ratio: number
+  ): Shape | null {
+    const p = context.getImageData(
+      Math.floor(pos.x * ratio),
+      Math.floor(pos.y * ratio),
+      1,
+      1
+    ).data;
+    const shape = getHitShape(p, 0);
+    if (shape) {
+      return shape;
+    }
+    if (p[3] === 0) {
+      return null;
+    }
+    // an edge pixel, or an opaque one with the colours of two shapes mixed
+    return this._walkIntersection(pos, context, ratio);
+  }
+  _walkIntersection(
+    pos: Vector2d,
+    context: Context,
+    ratio = this.hitCanvas.pixelRatio
+  ): Shape | null {
+    const cx = Math.floor(pos.x * ratio),
       cy = Math.floor(pos.y * ratio);
     const read = (r: number) =>
-      this.hitCanvas.context.getImageData(cx - r, cy - r, r * 2 + 1, r * 2 + 1)
-        .data;
+      context.getImageData(cx - r, cy - r, r * 2 + 1, r * 2 + 1).data;
     let r = HIT_SEARCH_RADIUS,
       size = r * 2 + 1,
       data = read(r),
@@ -450,7 +482,8 @@ export class Layer extends Container<Group | Shape> {
   // the hit graph is skipped while a node of the layer (or the stage) is
   // dragged or a transformer on the layer, or of a node on it, is
   // transforming, as the layer is redrawn every frame; the draw that follows
-  // restores it
+  // restores it. While a drag freezes the graph this way, the layer keeps the
+  // bitmap from before the drag instead of clearing it
   shouldDrawHit(top?: Node) {
     if (!super.shouldDrawHit(top)) {
       return false;
@@ -458,22 +491,50 @@ export class Layer extends Container<Group | Shape> {
     if (top || Konva.hitOnDragEnabled) {
       return true;
     }
-    let underDrag = false;
+    // the live buffer paints during a drag only; a transforming layer keeps
+    // its graph frozen even there
+    if (this._drawingLiveHit) {
+      return !Konva['Transformer']?._isLayerTransforming(this);
+    }
+    return (
+      !this._isHitFrozen() && !Konva['Transformer']?._isLayerTransforming(this)
+    );
+  }
+  // true while a drag keeps this layer's hit canvas frozen: the canvas is not
+  // cleared or redrawn, so getIntersection() keeps the pre-drag graph
+  _isHitFrozen() {
+    let frozen = false;
     DD._dragElements.forEach((elem) => {
       if (
         elem.dragStatus === 'dragging' &&
         (elem.node === this.getStage() || elem.node.getLayer() === this)
       ) {
-        underDrag = true;
+        frozen = true;
       }
     });
-    return !underDrag && !Konva['Transformer']?._isLayerTransforming(this);
+    return frozen;
+  }
+  // paint the current, live hit graph of the layer into a buffer canvas,
+  // bypassing the drag freeze without touching the frozen layer hit canvas
+  _drawLiveHit(buffer: HitCanvas) {
+    this._drawingLiveHit = true;
+    try {
+      this.drawHit(buffer);
+    } finally {
+      this._drawingLiveHit = false;
+    }
   }
   drawHit(can?: HitCanvas, top?: Node) {
     const layer = this.getLayer(),
       canvas = can || (layer && layer.hitCanvas);
 
     if (!can && layer) {
+      // a frozen layer keeps its hit canvas exactly as it was when the drag
+      // started: no resize, no clear, no redraw, so events of other pointers
+      // and getIntersection() read a stable graph while the scene moves
+      if (layer._isHitFrozen() && !Konva.hitOnDragEnabled) {
+        return this;
+      }
       // allocate or release the hit canvas to match the current listening
       // state - this also picks up a listening change made after the last draw
       layer._syncHitCanvasSize();

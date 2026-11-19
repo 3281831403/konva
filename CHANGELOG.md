@@ -5,6 +5,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
 
+- Fixed multi-touch handling while a node is dragged: presses, releases and clicks of other pointers are now dispatched against the current picture instead of falling through to the stage. The dragged node is hit tested at its current position, other nodes behave exactly as without a drag (clipped, `listening: false` and hidden nodes stay unreachable), layer hit canvases remain frozen at their pre-drag graph so `getIntersection()` keeps its old results, and no global switch such as `hitOnDragEnabled` is involved
 - Fixed `Text` word wrap for Chinese and Japanese: lines break between characters, not only at spaces. Thanks [@b84330808](https://github.com/b84330808)
 - Fixed `Text` word wrap starting a line with a dash. Thanks [@nk-batman21](https://github.com/nk-batman21)
 - Fixed `\r\n` line endings making `Text` lines one space wider. Thanks [@b84330808](https://github.com/b84330808)

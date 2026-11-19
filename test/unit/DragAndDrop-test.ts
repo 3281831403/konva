@@ -280,7 +280,7 @@ describe('DragAndDrop', function () {
   });
 
   // ======================================================
-  it('while dragging do not draw hit', function () {
+  it('while dragging the hit graph stays frozen at its pre-drag state', function () {
     var stage = addStage();
 
     var layer = new Konva.Layer();
@@ -332,7 +332,7 @@ describe('DragAndDrop', function () {
       y: stage.height() / 2,
     });
 
-    // redraw layer. hit must be not touched for not dragging layer
+    // redraw layer. the layer without a drag redraws its hit graph as usual
     layer.draw();
     shape = layer.getIntersection({
       x: 2,
@@ -342,13 +342,23 @@ describe('DragAndDrop', function () {
 
     assert(circle.isDragging(), 'dragging is ok');
 
+    // the dragged layer is redrawn on every frame, but its hit canvas is not
+    // cleared: it keeps the graph as it was when the drag started
     dragLayer.draw();
     shape = dragLayer.getIntersection({
       x: stage.width() / 2,
       y: stage.height() / 2,
     });
-    // as dragLayer under dragging we should not able to detect intersect
-    assert.equal(!!shape, false, 'circle is not detected');
+    assert.equal(
+      shape,
+      circle,
+      'frozen hit graph still finds the circle at its pre-drag position'
+    );
+    assert.equal(
+      stage.getIntersection({ x: stage.width() / 2, y: stage.height() / 2 }),
+      circle,
+      'stage.getIntersection returns the frozen result too'
+    );
 
     simulateMouseUp(stage, {
       x: 291,
@@ -421,8 +431,14 @@ describe('DragAndDrop', function () {
       x: stage.width() / 2,
       y: stage.height() / 2,
     });
-    // as endDragLayer under dragging we should not able to detect intersect
-    assert.equal(!!shape, false, 'circle is not detected');
+    // the hit graph is frozen while the layer holds a dragged node. Circle
+    // moved onto this layer mid-drag, but the frozen bitmap still shows the
+    // graph from before the move (rect only), so circle is not detected here
+    assert.equal(
+      !!shape,
+      false,
+      'frozen hit graph does not include the just-moved circle'
+    );
 
     simulateMouseUp(stage, {
       x: 291,

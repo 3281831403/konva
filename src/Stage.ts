@@ -414,6 +414,51 @@ export class Stage extends Container<Layer, StageConfig> {
 
     return null;
   }
+  // intersection for event dispatch while a node of this stage is dragged.
+  // The frozen hit canvases still describe the scene before the drag, so they
+  // cannot be read here: repaint each listening layer's current hit graph
+  // into the shared buffer canvas instead. A dragged shape is thus tested at
+  // its current position, while clipping, listening and visibility rules stay
+  // exactly as without a drag. The layer hit canvases are never touched
+  _getIntersectionDuringDrag(pos: Vector2d) {
+    const layers = this.children,
+      len = layers.length,
+      end = len - 1;
+    const buffer = this.bufferHitCanvas;
+    buffer.setSizeIfChanged(this.width(), this.height());
+    for (let n = end; n >= 0; n--) {
+      const layer = layers[n];
+      if (!layer.isListening() || !layer.isVisible()) {
+        continue;
+      }
+      buffer.getContext().clear();
+      layer._drawLiveHit(buffer);
+      const shape = layer._getIntersectionFromCanvas(
+        pos,
+        buffer.context,
+        buffer.pixelRatio
+      );
+      if (shape) {
+        return shape;
+      }
+    }
+    return null;
+  }
+  // the target of pointer down/up/cancel dispatch: the current scene while a
+  // drag is in progress, the frozen hit graph (getIntersection) otherwise
+  _getDispatchIntersection(pos: Vector2d) {
+    return this._hasDraggingNode()
+      ? this._getIntersectionDuringDrag(pos)
+      : this.getIntersection(pos);
+  }
+  _hasDraggingNode() {
+    for (const elem of DD._dragElements.values()) {
+      if (elem.dragStatus === 'dragging' && elem.node.getStage() === this) {
+        return true;
+      }
+    }
+    return false;
+  }
   _resizeDOM() {
     const width = this.width();
     const height = this.height();
@@ -526,9 +571,7 @@ export class Stage extends Container<Layer, StageConfig> {
   }
   _pointerEventsEnabled() {
     if (Konva.hitOnDragEnabled) return true;
-    for (const { node, dragStatus } of DD._dragElements.values()) {
-      if (dragStatus === 'dragging' && node.getStage() === this) return false;
-    }
+    if (this._hasDraggingNode()) return false;
     return !this.getLayers().some((layer) =>
       Konva['Transformer']?._isLayerTransforming(layer)
     );
@@ -604,7 +647,7 @@ export class Stage extends Container<Layer, StageConfig> {
 
     let triggeredOnShape = false;
     this._changedPointerPositions.forEach((pos) => {
-      const shape = this.getIntersection(pos);
+      const shape = this._getDispatchIntersection(pos);
       const key = `${eventType}:${pos.id}`;
       const state: PointerState = {
         targetShape: this._pointerStates.get(key)?.targetShape,
@@ -735,7 +778,7 @@ export class Stage extends Container<Layer, StageConfig> {
         this._pointerStates.set(key, state);
       }
       const shape = (PointerEvents.getCapturedShape(pos.id) ||
-        this.getIntersection(pos)) as Shape;
+        this._getDispatchIntersection(pos)) as Shape;
       const targetShape =
         state.targetShape === shape || state.targetShape?.getStage() === this
           ? state.targetShape
@@ -802,8 +845,9 @@ export class Stage extends Container<Layer, StageConfig> {
       } else {
         this._pointerStates.delete(key);
       }
-      const shape = (PointerEvents.getCapturedShape(pos.id) ||
-        this.getIntersection(pos)) as Shape;
+      const shape =
+        PointerEvents.getCapturedShape(pos.id) ||
+        this._getDispatchIntersection(pos);
 
       const alreadyReleased = shape && processedShapesIds[shape._id];
       if (shape) {
@@ -938,8 +982,8 @@ export class Stage extends Container<Layer, StageConfig> {
       } else {
         this._pointerStates.delete(key);
       }
-      const shape =
-        PointerEvents.getCapturedShape(pos.id) || this.getIntersection(pos);
+      const shape = (PointerEvents.getCapturedShape(pos.id) ||
+        this._getDispatchIntersection(pos)) as Shape;
       const event = { evt, pointerId: pos.id };
       if (shape) {
         if (events) shape._fireAndBubble(events.pointercancel, { ...event });
