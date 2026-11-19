@@ -301,6 +301,13 @@ export class Tag extends Shape<TagConfig> {
 Tag.prototype.className = 'Tag';
 _registerNode(Tag, true);
 
+// the pointer is part of the bounds (see getSelfRect)
+Tag.prototype._attrsAffectingSize = [
+  'pointerDirection',
+  'pointerWidth',
+  'pointerHeight',
+];
+
 /**
  * get/set pointer direction
  * @name Konva.Tag#pointerDirection

@@ -368,6 +368,9 @@ export class Transformer extends Group {
   _lastNodeRect?: Readonly<Box>;
   // the layout is stale; the next sync point runs _update() (see _syncUpdate)
   _updatePending = false;
+  // self rects of the attached shapes that can resize without firing any
+  // change event, as last measured by _probeVolatileNodes
+  _volatileRects?: Map<Shape, IRect>;
 
   static isTransforming = () => {
     return activeTransformers.size > 0;
@@ -612,8 +615,13 @@ export class Transformer extends Group {
    * });
    */
   _resetTransformCache(changedNode?: Node) {
-    if (changedNode) this._nodeRectCache?.delete(changedNode);
-    else this._nodeRectCache?.clear();
+    if (changedNode) {
+      this._nodeRectCache?.delete(changedNode);
+      this._volatileRects?.delete(changedNode as Shape);
+    } else {
+      this._nodeRectCache?.clear();
+      this._volatileRects?.clear();
+    }
     this._clearCache(NODES_RECT);
     this._clearCache('transform');
     this._clearSelfAndDescendantCache('absoluteTransform');
@@ -653,7 +661,58 @@ export class Transformer extends Group {
   }
   drawScene(can?: SceneCanvas, top?: Node) {
     this._syncUpdate();
+    this._probeVolatileNodes();
     return super.drawScene(can, top);
+  }
+  // A shape whose getSelfRect reads more than its attributes — a Sprite
+  // frame, a Tag pointer, a Line points array mutated in place, a custom
+  // getSelfRect or selfRectFunc reading outside state — can resize with no
+  // change event, so no event can schedule a relayout. Only those shapes are
+  // re-measured, when the transformer draws; everything else notifies through
+  // change events, so a quiet draw measures nothing. A difference relayouts
+  // before the hit graph of the same draw is painted, so the new corners are
+  // hit in the same frame.
+  _probeVolatileNodes() {
+    if (this._fitting || this._transforming) {
+      return;
+    }
+    const skipStroke = this.ignoreStroke();
+    let changed = false;
+    for (const node of this.nodes()) {
+      if (
+        !(node instanceof Shape) ||
+        (node.getSelfRect === Shape.prototype.getSelfRect &&
+          !node.attrs.selfRectFunc)
+      ) {
+        continue;
+      }
+      const rect = node.getClientRect({
+        skipTransform: true,
+        skipShadow: true,
+        skipStroke,
+      });
+      const last = this._volatileRects?.get(node);
+      if (!last) {
+        (this._volatileRects || (this._volatileRects = new Map())).set(
+          node,
+          rect
+        );
+        continue;
+      }
+      if (
+        last.x !== rect.x ||
+        last.y !== rect.y ||
+        last.width !== rect.width ||
+        last.height !== rect.height
+      ) {
+        changed = true;
+      }
+      this._volatileRects!.set(node, rect);
+    }
+    if (changed) {
+      this._resetTransformCache();
+      this._update();
+    }
   }
   drawHit(can?: HitCanvas, top?: Node) {
     this._syncUpdate();
@@ -1496,8 +1555,9 @@ export class Transformer extends Group {
   /**
    * force update of Konva.Transformer.
    * The transformer follows attribute changes of attached nodes and, for an attached group, any change of its descendants.
-   * Use it after a change that sets no attribute, for example a `Line` points array mutated in place
-   * or a custom `getSelfRect()` that depends on outside state.
+   * Bounds that change with no attribute change at all — a `Line` points array mutated in place
+   * or a custom `getSelfRect()` that depends on outside state — are picked up when the transformer
+   * next draws. Call this only to apply such a change immediately, without waiting for a draw.
    * @method
    * @name Konva.Transformer#forceUpdate
    */

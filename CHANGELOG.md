@@ -5,6 +5,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
 
+- Fixed `Transformer` not following bounds that change without a size attribute it observes: `Sprite` frame, animation and frame offset changes, `Tag` pointer changes on a directly attached tag, a `Line` points array mutated in place and a custom `getSelfRect()` reading outside state. The box and anchors follow on the next draw and the new corners are hit in the same frame, without `forceUpdate()`
 - Fixed `Text` word wrap for Chinese and Japanese: lines break between characters, not only at spaces. Thanks [@b84330808](https://github.com/b84330808)
 - Fixed `Text` word wrap starting a line with a dash. Thanks [@nk-batman21](https://github.com/nk-batman21)
 - Fixed `\r\n` line endings making `Text` lines one space wider. Thanks [@b84330808](https://github.com/b84330808)

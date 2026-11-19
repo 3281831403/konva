@@ -19,7 +19,6 @@ re-raise one without new evidence that it reaches ordinary users.
 - **`Mask` replaces source alpha with mask coverage.** `src/filters/Mask.ts`: needs opaque near-identical corners plus interior transparency, which the common use of `Mask` never has.
 - **`points()` is typed `number[]` but can hold a `Float32Array`.** `src/shapes/Line.ts`: the current type was chosen deliberately. Correcting it either degrades the common `number[]` path or copies on every set.
 - **`RegularPolygon` warns falsely about a per-corner radius array.** `src/shapes/RegularPolygon.ts`: a development-only warning; rendering is correct. Correct the `{Number}` JSDoc to `{Number|Array<Number>}` if you touch the file.
-- **`Sprite` frame size and `Tag` pointer changes do not notify a `Transformer`.** `src/shapes/Sprite.ts`, `src/shapes/Label.ts`: attaching a Transformer to either directly is niche, and `forceUpdate()` is the documented escape hatch.
 - **A `Tag` pointer wider than its body is outside the bounds.** `src/shapes/Label.ts`: only when such a Label is cached, exported or transformed.
 
 ## Coverage of the audit

@@ -6552,3 +6552,255 @@ describe('Transformer', function () {
     assert.deepEqual(tr.size(), { width: 90, height: 90 });
   });
 });
+
+describe('Transformer data-driven bounds', function () {
+  function addSprite(stage, attrs = {}) {
+    const layer = new Konva.Layer();
+    stage.add(layer);
+    const sprite = new Konva.Sprite({
+      animation: 'idle',
+      animations: {
+        // two frames of different sizes
+        idle: [0, 0, 32, 32, 32, 0, 64, 96],
+      },
+      ...attrs,
+    });
+    layer.add(sprite);
+    const tr = new Konva.Transformer({ nodes: [sprite] });
+    layer.add(tr);
+    layer.draw();
+    return { layer, sprite, tr };
+  }
+
+  it('follows a sprite frame of a different size after the next draw and hits the new corner in the same frame', function () {
+    const { layer, sprite, tr } = addSprite(addStage(), { x: 10, y: 10 });
+    assert.equal(tr.width(), 32);
+    assert.equal(tr.height(), 32);
+
+    sprite.frameIndex(1);
+    // no forceUpdate()
+    layer.draw();
+
+    assert.equal(tr.width(), 64);
+    assert.equal(tr.height(), 96);
+    const anchor = tr.findOne('.bottom-right')!;
+    assert.deepEqual(anchor.getAbsolutePosition(), { x: 74, y: 106 });
+    assert.equal(layer.getIntersection({ x: 74, y: 106 }), anchor);
+  });
+
+  it('follows frames advanced by a running sprite animation', function () {
+    const { sprite, tr } = addSprite(addStage());
+    sprite.start();
+    try {
+      // what the playback interval does on every tick
+      sprite._updateIndex();
+      assert.equal(sprite.frameIndex(), 1);
+      sprite.getLayer()!.draw();
+      assert.equal(tr.width(), 64);
+      assert.equal(tr.height(), 96);
+    } finally {
+      sprite.stop();
+    }
+  });
+
+  it('follows a changed animation key and a replaced animations map', function () {
+    const { sprite, tr } = addSprite(addStage());
+    sprite.animations({
+      idle: [0, 0, 32, 32],
+      run: [0, 0, 48, 50],
+    });
+    sprite.animation('run');
+    sprite.getLayer()!.draw();
+    assert.equal(tr.width(), 48);
+    assert.equal(tr.height(), 50);
+
+    sprite.animations({
+      idle: [0, 0, 32, 32],
+      run: [0, 0, 20, 80],
+    });
+    sprite.getLayer()!.draw();
+    assert.equal(tr.width(), 20);
+    assert.equal(tr.height(), 80);
+  });
+
+  it('follows frame offsets added to a sprite', function () {
+    const { sprite, tr } = addSprite(addStage(), { x: 10, y: 10 });
+    sprite.frameOffsets({ idle: [15, 25, 0, 0] });
+    sprite.getLayer()!.draw();
+    assert.equal(tr.x(), 25);
+    assert.equal(tr.y(), 35);
+    assert.equal(tr.width(), 32);
+    assert.equal(tr.height(), 32);
+  });
+
+  it('follows pointerWidth of a directly attached Tag', function () {
+    const stage = addStage();
+    const layer = new Konva.Layer();
+    stage.add(layer);
+    const tag = new Konva.Tag({
+      x: 20,
+      y: 20,
+      width: 100,
+      height: 40,
+      pointerDirection: 'right',
+      pointerWidth: 60,
+      pointerHeight: 30,
+      fill: 'yellow',
+    });
+    layer.add(tag);
+    const tr = new Konva.Transformer({ nodes: [tag] });
+    layer.add(tr);
+    layer.draw();
+    assert.equal(tr.width(), 160);
+
+    tag.pointerWidth(80);
+    layer.draw();
+
+    assert.equal(tr.width(), 180);
+    const anchor = tr.findOne('.middle-right')!;
+    assert.deepEqual(anchor.getAbsolutePosition(), { x: 200, y: 40 });
+    assert.equal(layer.getIntersection({ x: 200, y: 40 }), anchor);
+  });
+
+  it('follows pointerDirection of a directly attached Tag', function () {
+    const stage = addStage();
+    const layer = new Konva.Layer();
+    stage.add(layer);
+    const tag = new Konva.Tag({
+      x: 100,
+      y: 20,
+      width: 100,
+      height: 40,
+      pointerDirection: 'right',
+      pointerWidth: 80,
+      pointerHeight: 30,
+      fill: 'yellow',
+    });
+    layer.add(tag);
+    const tr = new Konva.Transformer({ nodes: [tag] });
+    layer.add(tr);
+    layer.draw();
+    assert.equal(tr.x(), 100);
+    assert.equal(tr.width(), 180);
+
+    tag.pointerDirection('left');
+    layer.draw();
+
+    assert.equal(tr.x(), 20);
+    assert.equal(tr.width(), 180);
+    const anchor = tr.findOne('.top-left')!;
+    assert.equal(anchor.getAbsolutePosition().x, 20);
+  });
+
+  it('follows a line points array mutated in place after the next draw', function () {
+    const stage = addStage();
+    const layer = new Konva.Layer();
+    stage.add(layer);
+    const line = new Konva.Line({
+      points: [0, 0, 50, 50],
+      stroke: 'red',
+      strokeWidth: 1,
+    });
+    layer.add(line);
+    const tr = new Konva.Transformer({ nodes: [line] });
+    layer.add(tr);
+    layer.draw();
+    assert.equal(tr.width(), 51);
+
+    line.points().push(150, 150);
+    // no setter and no forceUpdate() — the next draw follows
+    layer.draw();
+
+    assert.equal(tr.width(), 151);
+    assert.equal(tr.height(), 151);
+    const anchor = tr.findOne('.bottom-right')!;
+    const pos = anchor.getAbsolutePosition();
+    assert.equal(layer.getIntersection(pos), anchor);
+  });
+
+  it('follows a custom getSelfRect reading outside state after the next draw', function () {
+    const stage = addStage();
+    const layer = new Konva.Layer();
+    stage.add(layer);
+    let size = 100;
+    class Custom extends Konva.Shape {
+      _sceneFunc(context) {
+        context.beginPath();
+        context.rect(0, 0, size, size);
+        context.closePath();
+        context.fillStrokeShape(this);
+      }
+      getSelfRect() {
+        return { x: 0, y: 0, width: size, height: size };
+      }
+    }
+    const custom = new Custom({ fill: 'green' });
+    layer.add(custom);
+    const tr = new Konva.Transformer({ nodes: [custom] });
+    layer.add(tr);
+    layer.draw();
+    assert.equal(tr.width(), 100);
+
+    size = 300;
+    // no attribute changed and no forceUpdate() — the next draw follows
+    layer.draw();
+
+    assert.equal(tr.width(), 300);
+    assert.equal(tr.height(), 300);
+  });
+
+  it('updates the union of a multi-selection when a sprite frame changes', function () {
+    const stage = addStage();
+    const layer = new Konva.Layer();
+    stage.add(layer);
+    const sprite = new Konva.Sprite({
+      animation: 'idle',
+      animations: { idle: [0, 0, 32, 32, 32, 0, 64, 96] },
+    });
+    const rect = new Konva.Rect({ x: 200, y: 0, width: 50, height: 40 });
+    layer.add(sprite, rect);
+    const tr = new Konva.Transformer({ nodes: [sprite, rect] });
+    layer.add(tr);
+    layer.draw();
+    assert.equal(tr.height(), 40);
+
+    sprite.frameIndex(1);
+    layer.draw();
+
+    assert.equal(tr.height(), 96);
+    assert.equal(tr.width(), 250);
+  });
+
+  it('measures only self-sizing shapes when a draw probes for silent changes', function () {
+    const stage = addStage();
+    const layer = new Konva.Layer();
+    stage.add(layer);
+    const line = new Konva.Line({
+      points: [0, 0, 10, 10],
+      stroke: 'red',
+      strokeWidth: 1,
+    });
+    const rect = new Konva.Rect({ width: 50, height: 50 });
+    layer.add(line, rect);
+    const tr = new Konva.Transformer({ nodes: [line, rect] });
+    layer.add(tr);
+    layer.draw();
+
+    let rectReads = 0;
+    const getClientRect = rect.getClientRect;
+    rect.getClientRect = function (config) {
+      rectReads++;
+      return getClientRect.call(this, config);
+    };
+    try {
+      layer.draw();
+      assert.equal(
+        rectReads,
+        0,
+        'a quiet draw must not re-measure nodes that notify by events'
+      );
+    } finally {
+      rect.getClientRect = getClientRect;
+    }
+  });
+});

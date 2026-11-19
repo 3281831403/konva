@@ -232,6 +232,14 @@ export class Sprite extends Shape<SpriteConfig> {
 Sprite.prototype.className = 'Sprite';
 _registerNode(Sprite, true);
 
+// the drawn frame, and so the bounds, depend on these
+Sprite.prototype._attrsAffectingSize = [
+  'animation',
+  'animations',
+  'frameIndex',
+  'frameOffsets',
+];
+
 // add getters setters
 Factory.addGetterSetter(Sprite, 'animation');
 
