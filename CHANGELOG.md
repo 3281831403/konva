@@ -9,6 +9,10 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Fixed `Text` word wrap starting a line with a dash. Thanks [@nk-batman21](https://github.com/nk-batman21)
 - Fixed `\r\n` line endings making `Text` lines one space wider. Thanks [@b84330808](https://github.com/b84330808)
 - Fixed `Transform.decompose()` , `getAbsoluteRotation()` and `Transformer` mirroring the rotation of a node with `scaleX` of `0` rotated past 90 degrees. Thanks [@abd1rahmane](https://github.com/abd1rahmane)
+- Fixed cached filter chains not noticing in-place edits: `node.filters().push(f)`, `filters()[i] = f`, `reverse()` and clearing with `length = 0` now apply on the next draw, and a rebuilt chain no longer resurrects stale filtered pixels
+- Fixed two nodes given the same `filters` array sharing one chain: the setter keeps a private copy, so editing one node's chain leaves the other alone
+- Fixed `setAttr()` of a custom filter input (read via `getAttr()` inside the filter) not re-running the chain; an unchanged chain is still applied only once
+- Fixed a throwing filter being marked as up to date while silently showing the unfiltered image: the node stays dirty and retries on the next draw
 
 ## 10.9.1 (2026-10-31)
 

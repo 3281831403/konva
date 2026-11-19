@@ -961,4 +961,221 @@ describe('Filter', function () {
       node.destroy();
     }
   });
+
+  describe('filter chain invalidation', function () {
+    const SIZE = 60;
+
+    function addFilteredRect(filters?) {
+      const stage = addStage({ width: SIZE, height: SIZE });
+      const layer = new Konva.Layer();
+      stage.add(layer);
+      const rect = new Konva.Rect({
+        width: SIZE,
+        height: SIZE,
+        fill: 'rgb(200, 30, 40)',
+      });
+      layer.add(rect);
+      rect.cache({ pixelRatio: 1 });
+      if (filters) {
+        rect.filters(filters);
+      }
+      layer.draw();
+      return { stage, layer, rect };
+    }
+
+    // the SIZE x SIZE frame of the layer, starting at x
+    function frameOf(layer, x = 0) {
+      return Array.from(layer.getContext().getImageData(x, 0, SIZE, SIZE).data);
+    }
+
+    function changedPixels(a, b) {
+      let changed = 0;
+      for (let i = 0; i < a.length; i += 4) {
+        if (
+          a[i] !== b[i] ||
+          a[i + 1] !== b[i + 1] ||
+          a[i + 2] !== b[i + 2] ||
+          a[i + 3] !== b[i + 3]
+        ) {
+          changed++;
+        }
+      }
+      return changed;
+    }
+
+    // order-sensitive against Invert: halve(Invert(x)) != Invert(halve(x))
+    const halve = function (imageData) {
+      const d = imageData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        d[i] = d[i] / 2;
+        d[i + 1] = d[i + 1] / 2;
+        d[i + 2] = d[i + 2] / 2;
+      }
+    };
+
+    it('push() onto the live chain applies on the next draw', function () {
+      const { layer, rect } = addFilteredRect([]);
+      const unfiltered = frameOf(layer);
+
+      rect.filters().push(Konva.Filters.Grayscale);
+      layer.draw();
+      const filtered = frameOf(layer);
+
+      assert.isAbove(changedPixels(unfiltered, filtered), 0);
+      const reference = addFilteredRect([Konva.Filters.Grayscale]);
+      assert.equal(changedPixels(filtered, frameOf(reference.layer)), 0);
+    });
+
+    it('assigning filters()[i] applies on the next draw', function () {
+      const { layer, rect } = addFilteredRect([Konva.Filters.Invert]);
+      const inverted = frameOf(layer);
+
+      rect.filters()[0] = Konva.Filters.Grayscale;
+      layer.draw();
+      const grayscale = frameOf(layer);
+
+      assert.isAbove(changedPixels(inverted, grayscale), 0);
+      const reference = addFilteredRect([Konva.Filters.Grayscale]);
+      assert.equal(changedPixels(grayscale, frameOf(reference.layer)), 0);
+    });
+
+    it('filters().reverse() reorders the chain like a re-set', function () {
+      const { layer, rect } = addFilteredRect([Konva.Filters.Invert, halve]);
+      const original = frameOf(layer);
+
+      rect.filters().reverse();
+      layer.draw();
+      const reversedInPlace = frameOf(layer);
+
+      const reference = addFilteredRect([halve, Konva.Filters.Invert]);
+      assert.isAbove(changedPixels(original, reversedInPlace), 0);
+      assert.equal(changedPixels(reversedInPlace, frameOf(reference.layer)), 0);
+    });
+
+    it('clearing the chain in place then pushing does not bring back stale pixels', function () {
+      const { layer, rect } = addFilteredRect([Konva.Filters.Invert]);
+      const inverted = frameOf(layer);
+
+      rect.filters().length = 0;
+      layer.draw();
+      const cleared = frameOf(layer);
+
+      rect.filters().push(Konva.Filters.Grayscale);
+      layer.draw();
+      const grayscale = frameOf(layer);
+
+      const plain = addFilteredRect();
+      assert.equal(changedPixels(cleared, frameOf(plain.layer)), 0);
+      const reference = addFilteredRect([Konva.Filters.Grayscale]);
+      assert.equal(changedPixels(grayscale, frameOf(reference.layer)), 0);
+      assert.isAbove(changedPixels(grayscale, inverted), 0);
+    });
+
+    it('clearing the chain leaves no filtered pixels behind', function () {
+      const { layer, rect } = addFilteredRect([Konva.Filters.Invert]);
+      const inverted = frameOf(layer);
+
+      rect.filters([]);
+      layer.draw();
+      const cleared = frameOf(layer);
+
+      const plain = addFilteredRect();
+      assert.equal(changedPixels(cleared, frameOf(plain.layer)), 0);
+      assert.isAbove(changedPixels(cleared, inverted), 0);
+    });
+
+    it('two nodes given one filters array do not share a chain', function () {
+      const stage = addStage({ width: SIZE * 2, height: SIZE });
+      const layer = new Konva.Layer();
+      stage.add(layer);
+      const left = new Konva.Rect({
+        width: SIZE,
+        height: SIZE,
+        fill: 'rgb(200, 30, 40)',
+      });
+      const right = new Konva.Rect({
+        x: SIZE,
+        width: SIZE,
+        height: SIZE,
+        fill: 'rgb(200, 30, 40)',
+      });
+      layer.add(left, right);
+      left.cache({ pixelRatio: 1 });
+      right.cache({ pixelRatio: 1 });
+
+      const chain = [Konva.Filters.Invert];
+      left.filters(chain);
+      right.filters(chain);
+      layer.draw();
+      const leftBefore = frameOf(layer);
+      const rightBefore = frameOf(layer, SIZE);
+
+      left.filters().push(Konva.Filters.Grayscale);
+      layer.draw();
+
+      assert.notEqual(left.filters(), right.filters());
+      assert.isAbove(changedPixels(leftBefore, frameOf(layer)), 0);
+      assert.equal(changedPixels(rightBefore, frameOf(layer, SIZE)), 0);
+    });
+
+    it('setAttr of a custom filter input re-runs the chain', function () {
+      const levelFilter = function (this: any, imageData) {
+        const level = this.getAttr('level') || 0;
+        const d = imageData.data;
+        for (let i = 0; i < d.length; i += 4) {
+          d[i] = level;
+          d[i + 1] = level;
+          d[i + 2] = level;
+          d[i + 3] = 255;
+        }
+      };
+      const { layer, rect } = addFilteredRect([levelFilter]);
+
+      rect.setAttr('level', 10);
+      layer.draw();
+      assert.deepEqual(frameOf(layer).slice(0, 4), [10, 10, 10, 255]);
+
+      rect.setAttr('level', 200);
+      layer.draw();
+      assert.deepEqual(frameOf(layer).slice(0, 4), [200, 200, 200, 255]);
+    });
+
+    it('an unchanged chain is applied once across repeated draws', function () {
+      let applications = 0;
+      const counter = function (this: any, imageData) {
+        applications++;
+        Konva.Filters.Invert.call(this, imageData);
+      };
+      const { layer } = addFilteredRect([counter]);
+
+      layer.draw();
+      layer.draw();
+      layer.draw();
+
+      assert.equal(applications, 1);
+    });
+
+    it('a throwing filter is not marked up to date and recovers', function () {
+      let shouldThrow = true;
+      const flaky = function (this: any, imageData) {
+        if (shouldThrow) {
+          throw new Error('boom');
+        }
+        Konva.Filters.Invert.call(this, imageData);
+      };
+      const { layer, rect } = addFilteredRect();
+      const unfiltered = frameOf(layer);
+
+      rect.filters([flaky]);
+      layer.draw();
+      // the failure is not recorded as a successful frame
+      assert.equal(rect._filterUpToDate, false);
+      assert.equal(changedPixels(frameOf(layer), unfiltered), 0);
+
+      shouldThrow = false;
+      layer.draw();
+      assert.equal(rect._filterUpToDate, true);
+      assert.isAbove(changedPixels(frameOf(layer), unfiltered), 0);
+    });
+  });
 });

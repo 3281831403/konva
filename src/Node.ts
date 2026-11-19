@@ -294,6 +294,9 @@ export abstract class Node<Config extends NodeConfig = NodeConfig> {
   _needClearTransformCache = false;
 
   _filterUpToDate = false;
+  // the chain that produced the current filter canvas, compared by identity
+  // so in-place edits (push, [i] =, reverse) are caught on the next draw
+  _appliedFilters: Filters | null = null;
   _isUnderCache = false;
   nodeType!: string;
   className!: string;
@@ -746,10 +749,13 @@ export abstract class Node<Config extends NodeConfig = NodeConfig> {
       filter;
 
     if (!filters || filters.length === 0) {
+      // no chain: drop any record of a previously applied one, so a chain
+      // rebuilt later never resurrects the stale filter canvas
+      this._appliedFilters = null;
       return sceneCanvas;
     }
 
-    if (this._filterUpToDate) {
+    if (this._filterUpToDate && this._filtersMatch(filters)) {
       return filterCanvas;
     }
 
@@ -788,6 +794,7 @@ export abstract class Node<Config extends NodeConfig = NodeConfig> {
       );
       filterContext.restore();
       this._filterUpToDate = true;
+      this._appliedFilters = filters.slice();
       return filterCanvas;
     }
 
@@ -825,11 +832,30 @@ export abstract class Node<Config extends NodeConfig = NodeConfig> {
           e.message +
           ' This post my help you https://konvajs.org/docs/posts/Tainted_Canvas.html.'
       );
+      // a failed chain is not a successful frame: stay dirty so the next
+      // draw retries instead of silently sticking to the unfiltered image
+      this._filterUpToDate = false;
+      this._appliedFilters = null;
+      return sceneCanvas;
     }
 
     this._filterUpToDate = true;
+    this._appliedFilters = filters.slice();
 
     return filterCanvas;
+  }
+  // is `filters` the same chain, in the same order, as the applied one?
+  _filtersMatch(filters: Filters) {
+    const applied = this._appliedFilters;
+    if (!applied || applied.length !== filters.length) {
+      return false;
+    }
+    for (let n = 0; n < applied.length; n++) {
+      if (applied[n] !== filters[n]) {
+        return false;
+      }
+    }
+    return true;
   }
   on<K extends keyof NodeEventMap>(
     evtStr: K,
@@ -2526,6 +2552,9 @@ export abstract class Node<Config extends NodeConfig = NodeConfig> {
       this.attrs[key] = val;
     }
     if (this._attrsVersion !== undefined) this._attrsVersion++;
+    // any attr may feed a custom filter through getAttr(), so a changed
+    // input must re-run the chain on the next draw
+    this._filterUpToDate = false;
     if (this._shouldFireChangeEvents) {
       this._fireChangeEvent(key, oldVal, val);
     }
@@ -3471,7 +3500,8 @@ addGetterSetter(Node, 'preventDefault', true, getBooleanValidator());
 
 addGetterSetter(Node, 'filters', undefined, function (this: Node, val) {
   this._filterUpToDate = false;
-  return val;
+  // store a private copy, so two nodes given one array never share a chain
+  return Util._isArray(val) ? val.slice() : val;
 });
 /**
  * get/set filters. Supports function filters, CSS filter strings, or mixed arrays.
