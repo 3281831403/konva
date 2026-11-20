@@ -260,6 +260,15 @@ export class Text extends Shape<TextConfig> {
   textHeight: number;
   // distance from the line box center to the baseline, see _setTextData
   _baselineShift = 0;
+  // painted glyph ink of every line, in the shape's local coordinates.
+  // Glyphs can reach past the advance box (italics, accents, negative letter
+  // spacing), so the layout box alone does not cover every drawn pixel.
+  _inkLines: Array<{
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+  }> = [];
   constructor(config?: TextConfig) {
     super(checkDefaultFill(config));
     this._setTextData();
@@ -498,43 +507,82 @@ export class Text extends Shape<TextConfig> {
     return rect;
   }
   _getSelfRectForDrawing() {
-    // Lines can be wider than the box, negative spacing moves the pen back,
-    // and glyph ink passes the advance box (italics, accents): up to 0.6em
-    // in common fonts, so pad by 1em.
-    const rect = this.getSelfRect(),
-      fontSize = this.fontSize(),
-      padding = this.padding(),
-      lineHeightPx = this.lineHeight() * fontSize,
-      available = this.getWidth() - padding * 2,
-      align = this.align(),
-      blockHeight = this.textArr.length * lineHeightPx,
-      top = this._getTextTop();
+    // Painted bounds follow the measured glyph ink instead of the layout box:
+    // glyphs reach past the advance width (italics, accents), a tight line
+    // height stacks glyphs over the box edges and negative letter spacing
+    // moves the pen back. One pixel on every side keeps antialiased edge
+    // pixels inside the cache canvas.
+    const rect = this.getSelfRect();
     let left = rect.x,
-      right = rect.x + rect.width;
-    for (const { text, width } of this.textArr) {
-      const x =
-        padding +
-        (align === RIGHT
-          ? available - width
-          : align === CENTER
-            ? (available - width) / 2
-            : 0);
-      const back = Math.min(0, this.letterSpacing()) * text.length;
-      left = Math.min(left, x + back);
-      right = Math.max(right, x + width - back);
+      top = rect.y,
+      right = rect.x + rect.width,
+      bottom = rect.y + rect.height;
+    for (const ink of this._inkLines) {
+      left = Math.min(left, ink.left);
+      top = Math.min(top, ink.top);
+      right = Math.max(right, ink.right);
+      bottom = Math.max(bottom, ink.bottom);
     }
-    const underline = this.textDecoration().includes('underline');
-    const y = Math.min(
-      rect.y,
-      top + (underline ? Math.min(0, this._getUnderlineOffset()) : 0)
-    );
+    if (this.textDecoration().includes('underline')) {
+      // the underline can sit below every line's descent
+      const fontSize = this.fontSize(),
+        lineHeightPx = this.lineHeight() * fontSize,
+        lines = this.textArr.length,
+        lineWidth = getDecorationLineWidth(fontSize);
+      let underlineBottom =
+        this._getTextTop() + lines * lineHeightPx - lineHeightPx / 2;
+      if (!Konva.legacyTextRendering) {
+        underlineBottom += this._baselineShift;
+      }
+      underlineBottom += this._getUnderlineOffset() + lineWidth / 2;
+      bottom = Math.max(bottom, underlineBottom);
+      top = Math.min(
+        top,
+        this._getTextTop() + this._getUnderlineOffset() - lineWidth / 2
+      );
+    }
     return {
-      x: left - fontSize,
-      y: y - fontSize,
-      width: right - left + fontSize * 2,
-      height:
-        Math.max(rect.y + rect.height, top + blockHeight) - y + fontSize * 2,
+      x: left - 1,
+      y: top - 1,
+      width: right - left + 2,
+      height: bottom - top + 2,
     };
+  }
+  cache(config?: Parameters<InstanceType<typeof Shape>['cache']>[0]) {
+    // The default cache box is the layout rect, but glyph ink can paint
+    // outside it (italics, tight line height, negative letter spacing).
+    // Keep the layout box's origin so the glyphs keep their sub-pixel
+    // translation, and extend the far edges to cover the painted ink.
+    if (
+      config &&
+      config.x !== undefined &&
+      config.y !== undefined &&
+      config.width !== undefined &&
+      config.height !== undefined
+    ) {
+      return super.cache(config);
+    }
+    const parent = this.getParent();
+    const layout = parent
+      ? this.getClientRect({ skipTransform: true, relativeTo: parent })
+      : this.getSelfRect();
+    const painted = parent
+      ? this.getClientRect({
+          skipTransform: true,
+          relativeTo: parent,
+          _forDrawing: true,
+        })
+      : this._getSelfRectForDrawing();
+    const x = layout.x,
+      y = layout.y;
+    return super.cache({
+      ...config,
+      x,
+      y,
+      width: Math.max(layout.x + layout.width, painted.x + painted.width) - x,
+      height:
+        Math.max(layout.y + layout.height, painted.y + painted.height) - y,
+    });
   }
   _hitFunc(context: Context) {
     const width = this.getWidth(),
@@ -829,6 +877,144 @@ export class Text extends Shape<TextConfig> {
       (width, line) => Math.max(width, line.width),
       0
     );
+    this._measureInkLines();
+  }
+
+  // actualBoundingBox* values are missing on very old canvas implementations;
+  // fall back to the font box, which always covers the painted glyphs
+  _inkMetrics(text: string) {
+    const metrics = getDummyContext().measureText(text);
+    return {
+      left: metrics.actualBoundingBoxLeft ?? 0,
+      right:
+        metrics.actualBoundingBoxRight ??
+        metrics.fontBoundingBoxAscent ??
+        this.fontSize(),
+      ascent:
+        metrics.actualBoundingBoxAscent ??
+        metrics.fontBoundingBoxAscent ??
+        this.fontSize(),
+      descent:
+        metrics.actualBoundingBoxDescent ??
+        metrics.fontBoundingBoxDescent ??
+        this.fontSize() * 0.25,
+    };
+  }
+
+  // Compute the painted ink box of every line in local coordinates. Mirrors
+  // the pen positions of _sceneFunc: the per-grapheme path draws each
+  // grapheme at its own pen with kerning disabled, while other text is drawn
+  // as one native run.
+  _measureInkLines() {
+    this._inkLines = [];
+    if (!this.text()) {
+      return;
+    }
+    const fontSize = this.fontSize(),
+      lineHeightPx = this.lineHeight() * fontSize,
+      padding = this.padding(),
+      available = this.getWidth() - padding * 2,
+      align = this.align(),
+      letterSpacing = this.letterSpacing(),
+      perGrapheme =
+        this.direction() !== RTL &&
+        (letterSpacing !== 0 || align === JUSTIFY || !!this.charRenderFunc());
+
+    // a custom charRenderFunc can paint anywhere, so its ink is not
+    // measurable; keep the conservative one-font-size margin instead
+    if (this.charRenderFunc()) {
+      this._inkLines = this.textArr.map((line, n) => {
+        const x =
+            padding +
+            (align === RIGHT
+              ? available - line.width
+              : align === CENTER
+                ? (available - line.width) / 2
+                : 0),
+          top = this._getTextTopOffset(n);
+        return {
+          left: x - fontSize,
+          right: x + line.width + fontSize,
+          top: top - fontSize,
+          bottom: top + lineHeightPx + fontSize,
+        };
+      });
+      return;
+    }
+
+    const dummyContext = getDummyContext();
+    dummyContext.font = this._getContextFont();
+    dummyContext.fontKerning = perGrapheme ? 'none' : 'auto';
+    // actualBoundingBoxAscent/Descent depend on the active textBaseline, so
+    // measure with the same baseline the scene function draws with
+    dummyContext.textBaseline = Konva.legacyTextRendering
+      ? MIDDLE
+      : 'alphabetic';
+
+    this.textArr.forEach((line, n) => {
+      const x =
+          padding +
+          (align === RIGHT
+            ? available - line.width
+            : align === CENTER
+              ? (available - line.width) / 2
+              : 0),
+        top = this._getTextTop() + n * lineHeightPx;
+
+      let left: number, right: number, ascent: number, descent: number;
+      if (perGrapheme) {
+        const graphemes = stringToArray(line.text);
+        let pen = 0;
+        left = Infinity;
+        right = -Infinity;
+        ascent = 0;
+        descent = 0;
+        for (const grapheme of graphemes) {
+          const m = this._inkMetrics(grapheme);
+          left = Math.min(left, pen - m.left);
+          right = Math.max(right, pen + m.right);
+          ascent = Math.max(ascent, m.ascent);
+          descent = Math.max(descent, m.descent);
+          pen += dummyContext.measureText(grapheme).width + letterSpacing;
+        }
+        if (!graphemes.length) {
+          left = right = 0;
+        }
+      } else {
+        const m = this._inkMetrics(line.text);
+        left = -m.left;
+        right = m.right;
+        ascent = m.ascent;
+        descent = m.descent;
+      }
+
+      let inkTop: number, inkBottom: number;
+      if (Konva.legacyTextRendering) {
+        // textBaseline 'middle': the pen sits at the line-box center and the
+        // ink extends ascent above and descent below that point
+        const center = top + lineHeightPx / 2;
+        inkTop = center - ascent;
+        inkBottom = center + descent;
+      } else {
+        // alphabetic baseline: ascent above, descent below the pen
+        const baselineY = this._baselineShift + lineHeightPx / 2;
+        inkTop = top + baselineY - ascent;
+        inkBottom = top + baselineY + descent;
+      }
+
+      this._inkLines.push({
+        left: x + left,
+        right: x + right,
+        top: inkTop,
+        bottom: inkBottom,
+      });
+    });
+  }
+
+  // vertical offset of a line's box from the top of the shape; _getTextTop()
+  // already includes the padding, so only the inter-line shift is added here
+  _getTextTopOffset(lineIndex: number) {
+    return this._getTextTop() + lineIndex * this.lineHeight() * this.fontSize();
   }
 
   /**

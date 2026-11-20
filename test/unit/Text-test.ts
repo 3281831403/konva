@@ -1600,6 +1600,158 @@ describe('Text', function () {
     assert.equal(text.getSelfRect().height, text.height());
   });
 
+  // painted ink bounds: the drawing rect covers every drawn pixel and a
+  // cache built from it keeps the bitmap identical, including glyphs that
+  // reach past the layout box (descent, italics, negative letter spacing)
+  const inkBoundsOf = function (layer: Konva.Layer) {
+    const canvas = layer.getNativeCanvasElement() as HTMLCanvasElement;
+    const pixels = layer
+      .getContext()
+      .getImageData(0, 0, canvas.width, canvas.height).data;
+    let minX = canvas.width,
+      minY = canvas.height,
+      maxX = -1,
+      maxY = -1,
+      count = 0;
+    for (let y = 0; y < canvas.height; y++) {
+      for (let x = 0; x < canvas.width; x++) {
+        if (pixels[(y * canvas.width + x) * 4 + 3] > 0) {
+          count++;
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x);
+          maxY = Math.max(maxY, y);
+        }
+      }
+    }
+    return { minX, minY, maxX, maxY, count };
+  };
+
+  const assertCacheKeepsEveryPixel = function (config: Konva.TextConfig) {
+    const liveStage = addStage();
+    const liveLayer = new Konva.Layer();
+    liveStage.add(liveLayer);
+    const live = new Konva.Text(config);
+    liveLayer.add(live);
+    liveLayer.draw();
+    const expected = inkBoundsOf(liveLayer);
+
+    const cachedStage = addStage();
+    const cachedLayer = new Konva.Layer();
+    cachedStage.add(cachedLayer);
+    const cached = new Konva.Text(config);
+    cachedLayer.add(cached);
+    cached.cache({ pixelRatio: 1 });
+    cachedLayer.draw();
+    const actual = inkBoundsOf(cachedLayer);
+
+    // identical bitmap: same pixels in the same places
+    assert.deepEqual(
+      {
+        minX: actual.minX,
+        minY: actual.minY,
+        maxX: actual.maxX,
+        maxY: actual.maxY,
+        count: actual.count,
+      },
+      {
+        minX: expected.minX,
+        minY: expected.minY,
+        maxX: expected.maxX,
+        maxY: expected.maxY,
+        count: expected.count,
+      }
+    );
+
+    // the drawing rect reported by the shape covers every painted pixel
+    const rect = cached.getClientRect({
+      skipTransform: true,
+      _forDrawing: true,
+    });
+    assert.isAtMost(rect.x, actual.minX);
+    assert.isAtMost(rect.y, actual.minY);
+    assert.isAtLeast(rect.x + rect.width, actual.maxX + 1);
+    assert.isAtLeast(rect.y + rect.height, actual.maxY + 1);
+    liveStage.destroy();
+    cachedStage.destroy();
+  };
+
+  it('ink bounds and cache: Wg at fontSize 40', function () {
+    assertCacheKeepsEveryPixel({ text: 'Wg', fontSize: 40 });
+  });
+
+  it('ink bounds and cache: tight lineHeight 0.8', function () {
+    assertCacheKeepsEveryPixel({
+      text: 'Wg',
+      fontSize: 40,
+      lineHeight: 0.8,
+    });
+  });
+
+  it('ink bounds and cache: Wg at fontSize 80', function () {
+    assertCacheKeepsEveryPixel({ text: 'Wg', fontSize: 80 });
+  });
+
+  it('ink bounds and cache: italic glyphs overhang the advance box', function () {
+    assertCacheKeepsEveryPixel({
+      text: 'WWW',
+      fontSize: 40,
+      fontStyle: 'italic',
+    });
+  });
+
+  it('ink bounds and cache: negative letterSpacing', function () {
+    assertCacheKeepsEveryPixel({
+      text: 'Wg',
+      fontSize: 40,
+      letterSpacing: -4,
+    });
+  });
+
+  it('ink bounds and cache: two lines with verticalAlign middle', function () {
+    assertCacheKeepsEveryPixel({
+      text: 'Wg\nWg',
+      fontSize: 40,
+      height: 200,
+      verticalAlign: 'middle',
+    });
+  });
+
+  it('ink bounds and cache: two lines with verticalAlign bottom', function () {
+    assertCacheKeepsEveryPixel({
+      text: 'Wg\nWg',
+      fontSize: 40,
+      height: 200,
+      verticalAlign: 'bottom',
+    });
+  });
+
+  it('the drawing rect is separate from the pure layout box', function () {
+    // getSelfRect stays the layout box; only the drawing rect follows ink
+    const text = new Konva.Text({
+      text: 'WWW',
+      fontSize: 40,
+      fontStyle: 'italic',
+    });
+    const self = text.getSelfRect();
+    assert.deepEqual(self, {
+      x: 0,
+      y: 0,
+      width: text.width(),
+      height: 40,
+    });
+    const drawing = text.getClientRect({
+      skipTransform: true,
+      _forDrawing: true,
+    });
+    assert.isAbove(drawing.width, self.width);
+    // width/height/textArr are untouched
+    assert.equal(text.getWidth(), self.width);
+    assert.equal(text.getHeight(), 40);
+    assert.equal(text.textArr.length, 1);
+    assert.equal(text.textArr[0].text, 'WWW');
+  });
+
   it('text getSelfRect measures nothing', function () {
     // getSelfRect runs per drag frame through getClientRect
     var text = new Konva.Text({

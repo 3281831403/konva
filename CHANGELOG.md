@@ -5,6 +5,8 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
 
+- Fixed `Text` glyph ink that paints outside the layout box being clipped by `cache()`: descenders, italics, tight `lineHeight` and negative `letterSpacing` now keep every pixel, so a cached `Text` renders identically to the live shape. The drawing bounds from `getClientRect({ _forDrawing: true })` now follow the measured glyph ink
+- Fixed `TextPath.getTextWidth()` reporting the advances without `letterSpacing`; it now returns the head-to-tail span of the laid-out glyphs, matching what `align` positions the text against
 - Fixed `Text` word wrap for Chinese and Japanese: lines break between characters, not only at spaces. Thanks [@b84330808](https://github.com/b84330808)
 - Fixed `Text` word wrap starting a line with a dash. Thanks [@nk-batman21](https://github.com/nk-batman21)
 - Fixed `\r\n` line endings making `Text` lines one space wider. Thanks [@b84330808](https://github.com/b84330808)

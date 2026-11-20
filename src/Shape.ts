@@ -610,7 +610,7 @@ export class Shape<
       width: fillRect.width + strokeWidthX,
       height: fillRect.height + strokeWidthY,
     };
-    if (forDrawing && this.strokeScaleEnabled()) {
+    if (forDrawing && this.strokeScaleEnabled() && !skipTransform) {
       rect = this._transformedRect(rect, relativeTo);
     }
     if (!config.skipShadow && this.hasShadow()) {

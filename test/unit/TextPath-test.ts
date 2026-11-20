@@ -1069,6 +1069,43 @@ describe('TextPath', function () {
     assertAlmostEqual(glyphs[2].p1.x, textpath.getTextWidth());
   });
 
+  it('getTextWidth is the head-to-tail glyph span, including letter spacing', function () {
+    // align lays the glyphs out against this span, so the reported width has
+    // to match the actual first-to-last glyph distance
+    for (const letterSpacing of [20, -4, 0]) {
+      const textpath = new Konva.TextPath({
+        text: 'WgWg',
+        fontSize: 40,
+        letterSpacing,
+        data: 'M0,0 L1000,0',
+      });
+      const glyphs = textpath.glyphInfo;
+      assert.equal(glyphs.length, 4);
+      assertAlmostEqual(
+        textpath.getTextWidth(),
+        glyphs[glyphs.length - 1].p1.x - glyphs[0].p0.x
+      );
+    }
+
+    // the reported case: 20px spacing on four glyphs adds three spacings to
+    // the 120px of advances
+    const spaced = new Konva.TextPath({
+      text: 'WgWg',
+      fontSize: 40,
+      letterSpacing: 20,
+      data: 'M0,0 L1000,0',
+    });
+    assert.equal(spaced.getTextWidth(), 180);
+
+    // without a path the same straight-line span is still available
+    const noPath = new Konva.TextPath({
+      text: 'WgWg',
+      fontSize: 40,
+      letterSpacing: 20,
+    });
+    assert.equal(noPath.getTextWidth(), 180);
+  });
+
   it('kerning keeps glyphs on a vertical path', function () {
     var stage = addStage();
     var layer = new Konva.Layer();

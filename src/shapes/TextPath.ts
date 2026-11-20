@@ -296,11 +296,15 @@ export class TextPath extends Shape<TextPathConfig> {
       width += chars[i].width + kern;
     }
     const { width: fullTextWidth, height } = this._getTextSize(this.attrs.text);
-    this.textWidth = width;
     this.textHeight = height;
     this.glyphInfo = [];
-
+    // textWidth is the head-to-tail span of the laid-out glyphs; assigned at
+    // the end (and here when no path can anchor them)
     if (!this.attrs.data) {
+      this.textWidth = Math.max(
+        width + (charArr.length - 1) * this.letterSpacing(),
+        0
+      );
       return null;
     }
 
@@ -316,11 +320,11 @@ export class TextPath extends Shape<TextPathConfig> {
     // path length when the path is sized to match the visually-measured text.
     const kerningAdjustment = Math.max(0, width - fullTextWidth);
 
-    // defines the width of the text on a straight line
-    const textWidth = Math.max(
-      this.textWidth + (charArr.length - 1) * letterSpacing,
-      0
-    );
+    // defines the width of the text on a straight line, including spacing
+    const textWidth = Math.max(width + (charArr.length - 1) * letterSpacing, 0);
+    // keep a defined span even when the path is too short and glyph layout
+    // returns before every glyph is anchored
+    this.textWidth = textWidth;
 
     let offset = 0;
     if (align === 'center') {
@@ -336,6 +340,10 @@ export class TextPath extends Shape<TextPathConfig> {
     // 3. Calculate the rotation, width, and midpoint of the glyph using the start and end points,
     // 4. Add glyph width to the offsetToGlyph and repeat
     let offsetToGlyph = offset;
+    // path length consumed from the first glyph's start to the last glyph's
+    // end; getTextWidth() reports this actual span, including spacing
+    let firstStart = 0;
+    let lastEnd = 0;
     // Keep the original boundary selection across gaps between subpaths.
     const cursor = this.dataArray.some(
       (segment, index) => index > 0 && segment.command === 'M'
@@ -359,13 +367,12 @@ export class TextPath extends Shape<TextPathConfig> {
       // text width, the accumulated per-glyph offset can exceed pathLength by
       // up to kerningAdjustment pixels. Clamp to pathLength in that case so
       // the last character is not silently dropped.
-      const charEndPoint = this._getPointAtLength(
+      const endLength =
         charEndLength > this.pathLength &&
-          charEndLength - this.pathLength <= kerningAdjustment
+        charEndLength - this.pathLength <= kerningAdjustment
           ? this.pathLength
-          : charEndLength,
-        cursor
-      );
+          : charEndLength;
+      const charEndPoint = this._getPointAtLength(endLength, cursor);
       if (!charEndPoint) {
         return;
       }
@@ -389,8 +396,15 @@ export class TextPath extends Shape<TextPathConfig> {
         width: width,
       });
 
+      if (i === 0) {
+        firstStart = offsetToGlyph;
+      }
+      lastEnd = endLength;
       offsetToGlyph += glyphWidth;
     }
+    // The documented width is the head-to-tail span of the laid-out glyphs,
+    // so it matches what align and getSelfRect position the text against.
+    this.textWidth = Math.max(lastEnd - firstStart, 0);
   }
   getSelfRect() {
     if (!this.glyphInfo.length) {

@@ -41,17 +41,6 @@ describe('Caching', function () {
         120,
       ],
       [
-        new Konva.Text({
-          text: 'Hello',
-          width: 100,
-          fontSize: 40,
-          stroke: 'red',
-          strokeWidth: 4,
-        }),
-        104,
-        44,
-      ],
-      [
         new Konva.Rect({
           width: 100,
           height: 100,
@@ -74,6 +63,30 @@ describe('Caching', function () {
       );
       node.destroy();
     }
+
+    // Text caches follow the painted glyph ink plus the stroke, not the
+    // layout box; font metrics differ between the canvas backends
+    const text = new Konva.Text({
+      text: 'Hello',
+      width: 100,
+      fontSize: 40,
+      stroke: 'red',
+      strokeWidth: 4,
+    });
+    const textAllocations = collectCanvasAllocations(() =>
+      text.cache({ pixelRatio: 1 })
+    );
+    const textCache = text._getCanvasCache();
+    const expectedTextSize = [101, 41];
+    assert.deepEqual(
+      [textAllocations[0].width, textAllocations[0].height],
+      expectedTextSize
+    );
+    assert.deepEqual(
+      [textCache.scene.width, textCache.scene.height],
+      expectedTextSize
+    );
+    text.destroy();
   });
 
   it('cache() with non-finite bounds is skipped, with an error, and stays chainable', function () {
